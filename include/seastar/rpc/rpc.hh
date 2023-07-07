@@ -607,6 +607,10 @@ private:
     server_options _options;
     bool _shutdown = false;
     uint64_t _next_client_id = 1;
+    timer<lowres_clock> _stop_watchdog;
+    uint32_t _handlers_running = 0;
+
+    void warn_stuck_handler();
 
 public:
     server(protocol_base* proto, const socket_address& addr, resource_limits memory_limit = resource_limits());
@@ -650,6 +654,10 @@ public:
     gate& reply_gate() {
         return _reply_gate;
     }
+
+    void handler_enter() noexcept { _handlers_running++; }
+    void handler_leave() noexcept { _handlers_running--; }
+
     friend connection;
     friend client;
 };
@@ -672,6 +680,7 @@ protected:
 
     virtual rpc_handler* get_handler(uint64_t msg_id) = 0;
     virtual void put_handler(rpc_handler*) = 0;
+    virtual void with_handlers(noncopyable_function<void(uint64_t, const rpc_handler&)>) const = 0;
 };
 
 /// \addtogroup rpc
@@ -910,6 +919,12 @@ public:
     }
 
 private:
+    void with_handlers(noncopyable_function<void(uint64_t, const rpc_handler&)> fn) const override {
+        for (const auto& h : _handlers) {
+            fn(uint64_t(h.first), h.second);
+        }
+    }
+
     rpc_handler* get_handler(uint64_t msg_id) override;
     void put_handler(rpc_handler*) override;
 
