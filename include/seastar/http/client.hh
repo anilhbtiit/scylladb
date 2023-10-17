@@ -180,12 +180,17 @@ class client {
     using connection_ptr = seastar::shared_ptr<connection>;
 
     future<connection_ptr> get_connection();
+    future<connection_ptr> make_connection();
     future<> put_connection(connection_ptr con);
     future<> shrink_connections();
 
     template <typename Fn>
     SEASTAR_CONCEPT( requires std::invocable<Fn, connection&> )
     auto with_connection(Fn&& fn);
+
+    template <typename Fn>
+    SEASTAR_CONCEPT( requires std::invocable<Fn, connection&> )
+    auto with_new_connection(Fn&& fn);
 
 public:
     using reply_handler = noncopyable_function<future<>(const reply&, input_stream<char>&& body)>;
