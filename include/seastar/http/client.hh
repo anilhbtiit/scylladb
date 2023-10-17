@@ -168,6 +168,7 @@ public:
 class client {
 public:
     using reply_handler = noncopyable_function<future<>(const reply&, input_stream<char>&& body)>;
+    using retry_requests = bool_class<struct retry_requests_tag>;
 
 private:
     friend class http::internal::client_ref;
@@ -178,6 +179,7 @@ private:
     unsigned _nr_connections = 0;
     unsigned _max_connections;
     unsigned long _total_new_connections = 0;
+    const retry_requests _retry;
     condition_variable _wait_con;
     connections_list_t _pool;
 
@@ -233,7 +235,7 @@ public:
      * \param f -- the factory pointer
      *
      */
-    explicit client(std::unique_ptr<connection_factory> f, unsigned max_connections = default_max_connections);
+    explicit client(std::unique_ptr<connection_factory> f, unsigned max_connections = default_max_connections, retry_requests retry = retry_requests::no);
 
     /**
      * \brief Send the request and handle the response
@@ -247,6 +249,9 @@ public:
      * \param handle -- the response handler
      * \param expected -- the optional expected reply status code, default is std::nullopt
      *
+     * Note that the handle callback should be prepared to be called more than once, because
+     * client may restart the whole request processing in case server closes the connection
+     * in the middle of operation
      */
     future<> make_request(request req, reply_handler handle, std::optional<reply::status_type> expected = std::nullopt);
 
