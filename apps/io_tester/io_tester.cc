@@ -70,6 +70,8 @@ static thread_local std::default_random_engine random_generator(random_seed);
 class context;
 enum class request_type { seqread, seqwrite, randread, randwrite, append, cpu, unlink };
 
+enum class unlink_type { ordinary, discard_blocks };
+
 namespace std {
 
 template <>
@@ -225,6 +227,7 @@ struct shard_info {
     std::chrono::duration<float> think_after = 0ms;
     std::chrono::duration<float> execution_time = 1ms;
     seastar::scheduling_group scheduling_group = seastar::default_scheduling_group();
+    ::unlink_type unlink_type = unlink_type::ordinary;
 };
 
 struct options {
@@ -692,12 +695,17 @@ class unlink_class_data : public class_data {
 private:
     sstring _dir_path{};
     uint64_t _file_id_to_remove{0u};
+    size_t _discard_block_size{4096};
+    bool _unlink_via_discarding_blocks{false};
 
 public:
     unlink_class_data(job_config cfg) : class_data(std::move(cfg)) {
         if (!_config.files_count.has_value()) {
             throw std::runtime_error("request_type::unlink requires specifying 'files_count'");
         }
+
+        _discard_block_size = _config.shard_info.request_size;
+        _unlink_via_discarding_blocks = (_config.shard_info.unlink_type == unlink_type::discard_blocks);
     }
 
     future<> do_start(sstring path, directory_entry_type type) override {
@@ -717,9 +725,11 @@ public:
         const auto fname = get_filename(_file_id_to_remove);
         ++_file_id_to_remove;
 
-        return remove_file(fname).then([]{
-            return make_ready_future<size_t>(0u);
-        });
+        if (_unlink_via_discarding_blocks) {
+            return blocks_discarding_unlink(fname);
+        } else {
+            return ordinary_unlink(fname);
+        }
     }
 
     void emit_results(YAML::Emitter& out) override {
@@ -736,6 +746,42 @@ public:
     }
 
 private:
+    future<size_t> blocks_discarding_unlink(const sstring& fname) {
+        const auto flags = open_flags::rw;
+
+        file_open_options options{};
+        options.append_is_unlikely = true;
+
+        return open_file_dma(fname, flags, options).then([fname, discard_block_size = _discard_block_size] (auto f) mutable {
+            return do_with(std::move(f), [fname, discard_block_size] (auto& f) mutable {
+                return remove_file(fname).then([f, discard_block_size]() mutable {
+                    return f.size().then([f, discard_block_size] (uint64_t fsize) mutable {
+                        const size_t non_full_blocks = (fsize % discard_block_size) == 0 ? 0u : 1u;
+                        const size_t blocks_count = (fsize / discard_block_size) + non_full_blocks;
+                        return do_for_each(boost::make_counting_iterator<size_t>(0), boost::make_counting_iterator<size_t>(blocks_count),
+                                           [f, fsize, discard_block_size] (size_t block_id) mutable {
+                            size_t offset = block_id * discard_block_size;
+                            size_t discard_end = std::min(offset + discard_block_size, fsize);
+                            size_t length = discard_end - offset;
+
+                            return f.discard(offset, length);
+                        }).then([f]() mutable {
+                            return f.close();
+                       });
+                    });
+                });
+            });
+       }).then([]() {
+           return make_ready_future<size_t>(0u);
+       });
+    }
+
+    future<size_t> ordinary_unlink(const sstring& fname) {
+        return remove_file(fname).then([]{
+            return make_ready_future<size_t>(0u);
+        });
+    }
+
     future<> stop_hook() override {
         if (all_files_removed() || keep_files) {
             return make_ready_future<>();
@@ -906,6 +952,24 @@ struct convert<request_type> {
 };
 
 template<>
+struct convert<unlink_type> {
+    static bool decode(const Node& node, unlink_type& ut) {
+        static const std::unordered_map<std::string, unlink_type> mappings = {
+            { "ordinary", unlink_type::ordinary },
+            { "discard_blocks", unlink_type::discard_blocks },
+        };
+
+        auto unlink_type_str = node.as<std::string>();
+        if (!mappings.count(unlink_type_str)) {
+            return false;
+        }
+
+        ut = mappings.at(unlink_type_str);
+        return true;
+    }
+};
+
+template<>
 struct convert<shard_info> {
     static bool decode(const Node& node, shard_info& sl) {
         if (node["parallelism"]) {
@@ -937,6 +1001,9 @@ struct convert<shard_info> {
         }
         if (node["execution_time"]) {
             sl.execution_time = node["execution_time"].as<duration_time>().time;
+        }
+        if (node["unlink_type"]) {
+            sl.unlink_type = node["unlink_type"].as<unlink_type>();
         }
         return true;
     }
