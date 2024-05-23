@@ -64,6 +64,8 @@ using namespace seastar;
 using namespace std::chrono_literals;
 using namespace boost::accumulators;
 
+static constexpr uint64_t extent_size_hint_alignment{1u << 20}; // 1MB
+
 static auto random_seed = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
 static thread_local std::default_random_engine random_generator(random_seed);
 
@@ -582,7 +584,7 @@ private:
             flags |= open_flags::dsync;
         }
         file_open_options options;
-        options.extent_allocation_size_hint = _config.file_size;
+        options.extent_allocation_size_hint = align_up<uint64_t>(_config.file_size, extent_size_hint_alignment);
         options.append_is_unlikely = true;
 
         return create_and_fill_file(fname, _config.file_size, flags, options).then([this](std::pair<file, uint64_t> p) {
@@ -774,7 +776,7 @@ private:
             const auto flags = open_flags::rw | open_flags::create;
 
             file_open_options options;
-            options.extent_allocation_size_hint = fsize;
+            options.extent_allocation_size_hint = align_up<uint64_t>(fsize, extent_size_hint_alignment);
             options.append_is_unlikely = true;
 
             return create_and_fill_file(fname, fsize, flags, options).then([](std::pair<file, uint64_t> p) {
