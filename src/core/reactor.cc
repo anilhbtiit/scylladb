@@ -1905,6 +1905,13 @@ reactor::open_file_dma(std::string_view nameref, open_flags flags, file_open_opt
                     attr.fsx_extsize = std::min(options.extent_allocation_size_hint,
                                         file_open_options::max_extent_allocation_size_hint);
 
+                    constexpr uint32_t min_extent_size_hint_alignment{128u << 10}; // 128KB
+                    constexpr uint32_t min_hint_alignment_mask{min_extent_size_hint_alignment - 1u};
+
+                    if (attr.fsx_extsize & min_hint_alignment_mask) {
+                        attr.fsx_extsize = align_up<uint32_t>(attr.fsx_extsize, min_extent_size_hint_alignment);
+                    }
+
                     // Ignore error; may be !xfs, and just a hint anyway
                     ::ioctl(fd, XFS_IOC_FSSETXATTR, &attr);
                 }
