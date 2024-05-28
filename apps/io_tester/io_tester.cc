@@ -772,7 +772,7 @@ private:
 
         return max_concurrent_for_each(boost::irange(UINT64_C(0), files_count()), max_concurrency(), [this] (uint64_t file_id) {
             const auto fname = get_filename(file_id);
-            const auto fsize = _config.file_size / files_count();
+            const auto fsize = align_up<uint64_t>(_config.file_size / files_count(), 4096u);
             const auto flags = open_flags::rw | open_flags::create;
 
             file_open_options options;
